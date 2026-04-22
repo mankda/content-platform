@@ -1,0 +1,71 @@
+name: Build docs
+
+on:
+  push:
+    paths:
+      - 'projects/*/docs/**'
+      - 'projects/*/docusaurus.config.js'
+      - 'projects/*/sidebars.js'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Fetch full history so we can push back to the same branch
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: '**/package-lock.json'
+
+      - name: Detect changed projects
+        id: slugs
+        run: |
+          # Get list of projects whose docs changed in this push
+          CHANGED=$(git diff --name-only ${{ github.event.before }} ${{ github.sha }} \
+            | grep -oP 'projects/\K[^/]+(?=/)' \
+            | sort -u || true)
+          echo "slugs=$CHANGED" >> "$GITHUB_OUTPUT"
+          echo "Changed projects: $CHANGED"
+
+      - name: Build Docusaurus for each changed project
+        if: steps.slugs.outputs.slugs != ''
+        run: |
+          for SLUG in ${{ steps.slugs.outputs.slugs }}; do
+            DIR="projects/$SLUG"
+            if [ ! -f "$DIR/docusaurus.config.js" ]; then
+              echo "No docusaurus.config.js in $DIR — skipping"
+              continue
+            fi
+            echo "Building $SLUG..."
+            (cd "$DIR" && npm ci && npx docusaurus build --out-dir generated)
+          done
+
+      - name: Commit generated output
+        if: steps.slugs.outputs.slugs != ''
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          CHANGED=false
+          for SLUG in ${{ steps.slugs.outputs.slugs }}; do
+            if [ -d "projects/$SLUG/generated" ]; then
+              git add "projects/$SLUG/generated"
+              CHANGED=true
+            fi
+          done
+
+          if [ "$CHANGED" = "true" ]; then
+            git commit -m "chore: rebuild generated docs [skip ci]"
+            git push origin HEAD:${{ github.ref_name }}
+          else
+            echo "Nothing to commit"
+          fi
